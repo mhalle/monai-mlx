@@ -90,11 +90,12 @@ class DynUNet(nn.Module):
 
         Block = UnetResBlock if res_block else UnetBasicBlock
 
-        # Input block (no stride)
+        # Input block uses strides[0] (often [1,1,1] but not always)
         ks0 = _to_tuple(kernel_size[0])
+        st0 = _to_tuple(strides[0])
         self.input_block = Block(
             in_channels, filters[0], kernel_size=ks0[0],
-            stride=1, norm_name=norm_name,
+            stride=st0[0], norm_name=norm_name,
         )
 
         # Encoder

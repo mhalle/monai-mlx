@@ -130,10 +130,16 @@ class Down(nn.Module):
         self.convs = TwoConv(in_channels, out_channels, act, norm, bias)
 
     def __call__(self, x):
-        # MaxPool3d: channels-last, pool spatial dims
-        # MLX doesn't have MaxPool3d, implement via strided slicing
+        # MaxPool3d 2x2x2: pad if odd, then pool via reshape
         B, D, H, W, C = x.shape
-        # 2x2x2 max pooling
+        # Pad to even dimensions if needed
+        pd = D % 2
+        ph = H % 2
+        pw = W % 2
+        if pd or ph or pw:
+            x = mx.pad(x, [(0, 0), (0, pd), (0, ph), (0, pw), (0, 0)])
+            B, D, H, W, C = x.shape
+        # 2x2x2 max pooling via reshape
         x = x.reshape(B, D // 2, 2, H // 2, 2, W // 2, 2, C)
         x = mx.max(x, axis=(2, 4, 6))
         return self.convs(x)

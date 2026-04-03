@@ -68,8 +68,15 @@ def get_norm(norm: str | tuple, channels: int) -> nn.Module:
     elif name in ("layer",):
         return nn.LayerNorm(dims=channels)
     elif name in ("batch",):
-        # MLX doesn't have BatchNorm with running stats for inference.
-        # Fall back to InstanceNorm which is equivalent at batch_size=1.
-        return nn.InstanceNorm(dims=channels)
+        import warnings
+        warnings.warn(
+            "MLX does not support BatchNorm with running statistics. "
+            "Substituting InstanceNorm, which is NOT equivalent at batch_size>1. "
+            "Results may differ from PyTorch for models trained with BatchNorm.",
+            UserWarning,
+            stacklevel=3,
+        )
+        affine = kwargs.get("affine", True)
+        return nn.InstanceNorm(dims=channels, affine=affine)
     else:
         raise ValueError(f"Unsupported norm: {norm}")

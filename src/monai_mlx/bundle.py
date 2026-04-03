@@ -83,11 +83,13 @@ def _strip_monai_kwargs(kwargs: dict) -> dict:
             "downsample", "use_v2", "proj_type", "pos_embed_type",
             "classification", "post_activation", "save_attn",
             "normalize", "norm_layer", "patch_norm",
-            "img_size"  # UNETR-specific, handled separately
             }
     cleaned = {}
     for k, v in kwargs.items():
         if k.startswith("_") or k in skip:
+            continue
+        # img_size: only UNETR needs it; skip for others (handled in build_model_from_config)
+        if k == "img_size":
             continue
         # Strip inplace from activation tuples
         if k == "act" and isinstance(v, (list, tuple)):
@@ -97,6 +99,35 @@ def _strip_monai_kwargs(kwargs: dict) -> dict:
             v = tuple(v)
         cleaned[k] = v
     return cleaned
+
+
+def _get_key_remapper(target: str):
+    """Return the appropriate weight key remapper for a model target."""
+    from .weights import (
+        remap_segresnet_keys, remap_basic_unet_keys, remap_unetr_keys,
+        remap_swin_unetr_keys, remap_dynunet_keys, remap_unet_keys,
+    )
+
+    target_lower = target.lower().rsplit(".", 1)[-1]
+
+    if "swinunetr" in target_lower:
+        return remap_swin_unetr_keys
+    elif "dynunet" in target_lower:
+        return remap_dynunet_keys
+    elif "segresnet" in target_lower:
+        return remap_segresnet_keys
+    elif "basicunet" in target_lower or "basicunet" in target_lower:
+        return remap_basic_unet_keys
+    elif "unetr" in target_lower:
+        return remap_unetr_keys
+    elif "unet" in target_lower:
+        # MONAI UNet needs n_levels — return a wrapper
+        def _remap(weights, **kwargs):
+            n_levels = kwargs.get("n_levels", 3)
+            return remap_unet_keys(weights, n_levels)
+        return _remap
+    else:
+        return lambda w, **kw: w  # no remapping
 
 
 def parse_bundle_config(bundle_path: str | Path) -> dict:
@@ -165,6 +196,15 @@ def build_model_from_config(parsed_config: dict):
         )
 
     kwargs = _strip_monai_kwargs(parsed_config["kwargs"])
+
+    # UNETR requires img_size
+    raw_kwargs = parsed_config["kwargs"]
+    if model_cls.__name__ == "UNETR" and "img_size" in raw_kwargs:
+        img_size = raw_kwargs["img_size"]
+        if isinstance(img_size, int):
+            img_size = (img_size, img_size, img_size)
+        kwargs["img_size"] = tuple(img_size)
+
     return model_cls(**kwargs)
 
 
@@ -189,18 +229,24 @@ def load_bundle(
     parsed = parse_bundle_config(bundle_path)
     model = build_model_from_config(parsed)
 
+    target = parsed.get("target", "")
+    remapper = _get_key_remapper(target) if target else (lambda w, **kw: w)
+    n_levels = len(parsed.get("kwargs", {}).get("channels", [0, 0, 0]))
+
     weights_path = bundle_path / "models" / weights_name
     if weights_path.exists():
         weights = load_weights_safetensors(weights_path)
-        model.load_weights(list(weights.items()), strict=False)
+        # Safetensors from convert_bundle already have remapped keys
+        model.load_weights(list(weights.items()))
     else:
-        # Try loading from .pt
+        # Fall back to .pt (needs torch + remapping)
         pt_path = bundle_path / "models" / "model.pt"
         if pt_path.exists():
             import torch
             state_dict = torch.load(str(pt_path), map_location="cpu", weights_only=True)
             mlx_weights = convert_pytorch_weights(state_dict)
-            model.load_weights(list(mlx_weights.items()), strict=False)
+            mlx_weights = remapper(mlx_weights, n_levels=n_levels)
+            model.load_weights(list(mlx_weights.items()))
         else:
             raise FileNotFoundError(f"No weights found in {bundle_path / 'models'}")
 
@@ -292,13 +338,26 @@ def convert_bundle(
     if not pt_path.exists():
         raise FileNotFoundError(f"No weights at {pt_path}")
 
+    # Parse config to determine model type for key remapping
+    parsed = parse_bundle_config(bundle_path)
+    target = parsed.get("target", "")
+    remapper = _get_key_remapper(target) if target else (lambda w, **kw: w)
+
     print(f"Loading {pt_path}...")
     state_dict = torch.load(str(pt_path), map_location="cpu", weights_only=True)
     mlx_weights = convert_pytorch_weights(state_dict)
 
+    # Apply model-specific key remapping
+    kwargs = parsed.get("kwargs", {})
+    n_levels = len(kwargs.get("channels", [0, 0, 0]))
+    try:
+        mlx_weights = remapper(mlx_weights, n_levels=n_levels)
+    except TypeError:
+        mlx_weights = remapper(mlx_weights)
+
     print(f"Saving {sf_path}...")
     save_weights_safetensors(mlx_weights, sf_path)
-    print(f"Converted {len(mlx_weights)} tensors")
+    print(f"Converted {len(mlx_weights)} tensors ({target})")
     return sf_path
 
 
