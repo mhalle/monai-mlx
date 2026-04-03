@@ -8,7 +8,7 @@ MLX inference backend for [MONAI](https://monai.io/) on Apple Silicon. Runs MONA
 
 ## Features
 
-- 5 architectures: UNet, SegResNet, BasicUNet, UNETR, SwinUNETR
+- 6 architectures: UNet, SegResNet, BasicUNet, DynUNet, UNETR, SwinUNETR
 - 2.7x faster than PyTorch MPS, 12x faster than CPU on SwinUNETR
 - Load pretrained models from the MONAI Model Zoo (35+ bundles)
 - Sliding window inference with Gaussian weighting for full-volume segmentation
@@ -129,9 +129,10 @@ At runtime, `load_bundle()` prefers safetensors if available, falls back to `.pt
 | SegResNet | Pre-activation residual + GroupNorm | 4.7M | max diff 0.000002 | Brain tumor, organ segmentation |
 | BasicUNet | MaxPool + ConvTranspose + concat skips | varies | max diff 0.000003 | General segmentation |
 | UNETR | ViT encoder + CNN decoder | varies | max diff 0.000004 | Multi-organ segmentation |
+| DynUNet | Variable-depth UNet (nnU-Net style) | varies | max diff < 0.001 | Auto3DSeg, configurable segmentation |
 | SwinUNETR | Swin Transformer + shifted window attention | 62M | max diff 0.000080 | BTCV, brain tumor, whole body |
 
-Not yet supported: DynUNet, diffusion models, detection models.
+Not yet supported: diffusion models, detection models.
 
 ## Memory optimization (fp16)
 
@@ -176,6 +177,7 @@ Pure MLX reimplementation of MONAI's inference path:
 - **transformer.py** -- PatchEmbedding, self-attention, MLP, ViT
 - **swin_unetr.py** -- Window attention, shifted windows, relative position bias, PatchMerging, SwinTransformer
 - **unet.py** -- MONAI UNet with ResidualUnit blocks and recursive-to-flat architecture
+- **dynunet.py** -- DynUNet with configurable depth, kernels, and strides
 - **unetr_blocks.py** -- UnetResBlock, UnetrUpBlock, UnetrPrUpBlock
 - **bundle.py** -- MONAI bundle config parser, model registry, download + convert CLI
 - **inference.py** -- Sliding window prediction with Gaussian weighting
