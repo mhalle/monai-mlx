@@ -29,7 +29,16 @@ def convert_pytorch_weights(pt_state_dict: dict) -> dict[str, mx.array]:
 
         # Transpose 5D conv weights
         if arr.ndim == 5:
-            if "deconv" in key or "transp" in key.lower() or "upsample" in key.lower():
+            # Detect ConvTranspose3d: key contains deconv/transp/upsample,
+            # OR shape indicates transposed conv (in_ch > out_ch typically,
+            # but more reliably: check if kernel matches stride pattern in UNETR)
+            is_transpose = ("deconv" in key or "transp" in key.lower()
+                           or "upsample" in key.lower()
+                           # UNETR PrUpBlock: blocks.{i}.0.conv.weight is ConvTranspose
+                           or (("blocks" in key and ".0.conv.weight" in key
+                                and "conv_block" not in key and "conv1" not in key
+                                and "conv2" not in key)))
+            if is_transpose:
                 # PyTorch ConvTranspose3d: (in_ch, out_ch, D, H, W)
                 # MLX ConvTranspose3d:     (out_ch, D, H, W, in_ch)
                 arr = arr.transpose(1, 2, 3, 4, 0)
@@ -114,6 +123,52 @@ def remap_basic_unet_keys(mlx_weights: dict[str, mx.array]) -> dict[str, mx.arra
         new_key = new_key.replace(".adn.N.", ".norm.")
         # upsample.deconv -> deconv
         new_key = new_key.replace(".upsample.deconv.", ".deconv.")
+        remapped[new_key] = val
+    return remapped
+
+
+def remap_unetr_keys(mlx_weights: dict[str, mx.array]) -> dict[str, mx.array]:
+    """Remap PyTorch UNETR/ViT keys to MLX module hierarchy."""
+    remapped = {}
+    for key, val in mlx_weights.items():
+        new_key = key
+
+        # Skip cross-attention weights (not used in inference)
+        if "cross_attn" in key or "norm_cross_attn" in key:
+            continue
+
+        # patch_embedding.patch_embeddings -> patch_embedding.proj
+        new_key = new_key.replace("patch_embedding.patch_embeddings.", "patch_embedding.proj.")
+
+        # decoder*.transp_conv.conv -> decoder*.transp_conv
+        # but NOT decoder*.conv_block.conv1.conv etc
+        if ".transp_conv.conv." in new_key and ".conv_block." not in new_key:
+            new_key = new_key.replace(".transp_conv.conv.", ".transp_conv.")
+
+        # transp_conv_init.conv -> transp_conv_init
+        new_key = new_key.replace(".transp_conv_init.conv.", ".transp_conv_init.")
+
+        # encoder PrUpBlock: blocks.{i}.0.conv -> blocks.{i}.0 (ConvTranspose unwrap)
+        import re
+        m = re.match(r'(encoder\d+\.blocks\.\d+)\.0\.conv\.(.*)', new_key)
+        if m:
+            new_key = f"{m.group(1)}.0.{m.group(2)}"
+
+        # encoder1.layer.conv3 -> encoder1.layer.downsample (residual projection)
+        new_key = new_key.replace(".layer.conv3.", ".layer.downsample.")
+        new_key = new_key.replace(".layer.norm3.", ".layer.norm3.")
+
+        # decoder conv_block.conv3 -> conv_block.downsample
+        new_key = new_key.replace(".conv_block.conv3.", ".conv_block.downsample.")
+
+        # out.conv.conv -> out.conv
+        if new_key.startswith("out.conv.conv."):
+            new_key = new_key.replace("out.conv.conv.", "out.conv.")
+
+        # Convolution.conv wrapper removal for dynunet blocks
+        # conv1.conv.weight -> conv1.conv.weight (our ConvOnly also has .conv)
+        # This should already match
+
         remapped[new_key] = val
     return remapped
 

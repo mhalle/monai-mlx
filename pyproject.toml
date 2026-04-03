@@ -30,3 +30,8 @@ packages = ["src/monai_mlx"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["slow: heavy benchmarks or pretrained model tests"]
+
+[dependency-groups]
+dev = [
+    "einops>=0.8.2",
+]

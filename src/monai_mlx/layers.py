@@ -60,7 +60,10 @@ def get_norm(norm: str | tuple, channels: int) -> nn.Module:
         num_groups = kwargs.get("num_groups", 8)
         return nn.GroupNorm(num_groups=num_groups, dims=channels, pytorch_compatible=True)
     elif name in ("instance",):
-        affine = kwargs.get("affine", True)
+        # MONAI's default for InstanceNorm depends on context:
+        # - Plain string "instance": affine=False (dynunet/UNETR convention)
+        # - Tuple ("instance", {"affine": True}): affine=True (BasicUNet convention)
+        affine = kwargs.get("affine", False)
         return nn.InstanceNorm(dims=channels, affine=affine)
     elif name in ("layer",):
         return nn.LayerNorm(dims=channels)
