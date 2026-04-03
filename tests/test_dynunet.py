@@ -88,3 +88,45 @@ def test_dynunet_matches_pytorch():
 
     assert y_pt.shape == y_mlx_np.shape
     assert diff.max() < 1e-3, f"Output differs: max_diff={diff.max():.6f}"
+
+
+def test_dynunet_anisotropic():
+    """DynUNet with anisotropic kernels and strides should match PyTorch."""
+    import torch
+    import mlx.core as mx
+    from monai.networks.nets import DynUNet as MonaiDynUNet
+    from monai_mlx.dynunet import DynUNet
+    from monai_mlx.weights import convert_pytorch_weights, remap_dynunet_keys
+
+    # Anisotropic: different kernel/stride per axis
+    cfg = dict(
+        kernel_size=[[3, 3, 3], [3, 3, 1], [3, 3, 3], [3, 3, 3]],
+        strides=[[1, 1, 1], [2, 2, 1], [2, 2, 2], [2, 2, 2]],
+        upsample_kernel_size=[[2, 2, 1], [2, 2, 2], [2, 2, 2]],
+        filters=[16, 32, 64, 128],
+    )
+
+    pt_model = MonaiDynUNet(spatial_dims=3, in_channels=1, out_channels=4, **cfg)
+    pt_model.eval()
+
+    mlx_model = DynUNet(in_channels=1, out_channels=4, **cfg)
+
+    mlx_weights = remap_dynunet_keys(convert_pytorch_weights(pt_model.state_dict()))
+    mlx_model.load_weights(list(mlx_weights.items()))
+
+    np.random.seed(42)
+    x_np = np.random.randn(1, 1, 32, 32, 16).astype(np.float32)
+
+    with torch.no_grad():
+        y_pt = pt_model(torch.from_numpy(x_np)).numpy()
+
+    x_mlx = mx.array(x_np[0].transpose(1, 2, 3, 0)[None])
+    y_mlx = mlx_model(x_mlx)
+    mx.eval(y_mlx)
+    y_mlx_np = np.array(y_mlx)[0].transpose(3, 0, 1, 2)[None]
+
+    diff = np.abs(y_pt - y_mlx_np)
+    print(f"\nAnisotropic: shape={y_mlx_np.shape}, max_diff={diff.max():.6f}")
+
+    assert y_pt.shape == y_mlx_np.shape
+    assert diff.max() < 1e-3, f"Anisotropic output differs: max_diff={diff.max():.6f}"
