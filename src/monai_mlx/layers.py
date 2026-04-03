@@ -60,7 +60,8 @@ def get_norm(norm: str | tuple, channels: int) -> nn.Module:
         num_groups = kwargs.get("num_groups", 8)
         return nn.GroupNorm(num_groups=num_groups, dims=channels, pytorch_compatible=True)
     elif name in ("instance",):
-        return nn.InstanceNorm(dims=channels)
+        affine = kwargs.get("affine", True)
+        return nn.InstanceNorm(dims=channels, affine=affine)
     elif name in ("layer",):
         return nn.LayerNorm(dims=channels)
     elif name in ("batch",):

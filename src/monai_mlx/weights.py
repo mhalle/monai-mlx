@@ -29,9 +29,14 @@ def convert_pytorch_weights(pt_state_dict: dict) -> dict[str, mx.array]:
 
         # Transpose 5D conv weights
         if arr.ndim == 5:
-            # Both Conv3d and ConvTranspose3d in MONAI use standard PyTorch layout
-            # Conv3d: (out_ch, in_ch, D, H, W) -> (out_ch, D, H, W, in_ch)
-            arr = arr.transpose(0, 2, 3, 4, 1)
+            if "deconv" in key or "transp" in key.lower() or "upsample" in key.lower():
+                # PyTorch ConvTranspose3d: (in_ch, out_ch, D, H, W)
+                # MLX ConvTranspose3d:     (out_ch, D, H, W, in_ch)
+                arr = arr.transpose(1, 2, 3, 4, 0)
+            else:
+                # PyTorch Conv3d: (out_ch, in_ch, D, H, W)
+                # MLX Conv3d:     (out_ch, D, H, W, in_ch)
+                arr = arr.transpose(0, 2, 3, 4, 1)
 
         mlx_weights[key] = mx.array(arr)
 
@@ -92,6 +97,24 @@ def remap_segresnet_keys(mlx_weights: dict[str, mx.array]) -> dict[str, mx.array
 
         remapped[new_key] = val
 
+    return remapped
+
+
+def remap_basic_unet_keys(mlx_weights: dict[str, mx.array]) -> dict[str, mx.array]:
+    """Remap PyTorch BasicUNet keys to MLX module hierarchy.
+
+    PyTorch: conv_0.conv_0.adn.N.weight -> MLX: conv_0.conv_0.norm.weight
+             conv_0.conv_0.conv.weight   -> MLX: conv_0.conv_0.conv.weight (same)
+             upcat_4.upsample.deconv.*   -> MLX: upcat_4.deconv.*
+    """
+    remapped = {}
+    for key, val in mlx_weights.items():
+        new_key = key
+        # adn.N -> norm
+        new_key = new_key.replace(".adn.N.", ".norm.")
+        # upsample.deconv -> deconv
+        new_key = new_key.replace(".upsample.deconv.", ".deconv.")
+        remapped[new_key] = val
     return remapped
 
 
