@@ -1,12 +1,11 @@
 """
 MONAI UNet — Enhanced U-Net with ResidualUnit blocks.
 
-Port of MONAI's UNet to MLX. Mirrors the PyTorch module hierarchy exactly
-to enable direct weight loading without complex key remapping.
+Port of MONAI's UNet to MLX. The key architectural difference from
+standard UNet: concatenation happens BEFORE the transposed convolution,
+so the up path handles both channel reduction and upsampling.
 
-The PyTorch UNet uses recursive SkipConnection nesting. We flatten this
-into explicit encoder/decoder paths but keep the internal ResidualUnit
-structure matching PyTorch's key names (conv.unit0, conv.unit1, residual).
+Flow: down → cat(skip, deeper) → transposed_conv_upsample → ResUnit
 
 All operations use channels-last (B, D, H, W, C) layout.
 """
@@ -22,15 +21,18 @@ from .layers import get_activation, get_norm
 
 
 class _ConvADN(nn.Module):
-    """Single Conv + Norm + Act (matches MONAI's Convolution with ADN)."""
+    """Conv + optional (Norm + Act). Matches MONAI Convolution with ADN."""
 
     def __init__(self, in_ch, out_ch, kernel_size=3, stride=1, bias=True,
                  norm="instance", act="prelu", conv_only=False, is_transposed=False):
         super().__init__()
         padding = (kernel_size - 1) // 2
         if is_transposed:
+            # output_padding ensures exact 2x upsampling (matches MONAI)
+            out_padding = tuple(s - 1 for s in (stride if isinstance(stride, tuple) else (stride,) * 3))
             self.conv = nn.ConvTranspose3d(in_ch, out_ch, kernel_size=kernel_size,
-                                            stride=stride, padding=padding, bias=bias)
+                                            stride=stride, padding=padding,
+                                            output_padding=out_padding, bias=bias)
         else:
             self.conv = nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size,
                                    stride=stride, padding=padding, bias=bias)
@@ -47,7 +49,7 @@ class _ConvADN(nn.Module):
 
 
 class _ADN(nn.Module):
-    """Norm + Act (matches MONAI's ADN with NDA ordering)."""
+    """Norm + Act (NDA ordering)."""
 
     def __init__(self, channels, norm="instance", act="prelu"):
         super().__init__()
@@ -62,38 +64,37 @@ class _ADN(nn.Module):
 
 
 class _ResidualUnit(nn.Module):
-    """ResidualUnit matching MONAI's key structure exactly.
+    """ResidualUnit with named sub-units matching MONAI's key structure.
 
     Keys: conv.unit0.conv.weight, conv.unit0.adn.N.weight, conv.unit0.adn.A.weight,
-          conv.unit1.conv.weight, ..., residual.weight
+          conv.unit1.{...}, residual.weight
     """
 
     def __init__(self, in_ch, out_ch, kernel_size=3, stride=1, subunits=2,
                  act="prelu", norm="instance", bias=True, last_conv_only=False):
         super().__init__()
-        # Build units as named dict to match PyTorch's Sequential naming
         self.conv = {}
         ch = in_ch
         for i in range(subunits):
             is_last = (i == subunits - 1)
             s = stride if i == 0 else 1
-            conv_only = is_last and last_conv_only
-            self.conv[f"unit{i}"] = _ConvADN(ch, out_ch, kernel_size, s, bias,
-                                              norm, act, conv_only=conv_only)
+            self.conv[f"unit{i}"] = _ConvADN(
+                ch, out_ch, kernel_size, s, bias, norm, act,
+                conv_only=(is_last and last_conv_only),
+            )
             ch = out_ch
 
-        # Residual projection
         if in_ch != out_ch or stride != 1:
-            padding = (kernel_size - 1) // 2
-            self.residual = nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size,
-                                       stride=stride, padding=padding, bias=bias)
+            # MONAI uses kernel_size=kernel_size when stride>1, kernel_size=1 when stride=1
+            res_ks = kernel_size if stride != 1 else 1
+            res_pad = (res_ks - 1) // 2
+            self.residual = nn.Conv3d(in_ch, out_ch, kernel_size=res_ks,
+                                       stride=stride, padding=res_pad, bias=bias)
         else:
             self.residual = None
 
     def __call__(self, x):
-        res = x
-        if self.residual is not None:
-            res = self.residual(res)
+        res = self.residual(x) if self.residual is not None else x
         for unit in self.conv.values():
             x = unit(x)
         return x + res
@@ -104,26 +105,8 @@ class UNet(nn.Module):
 
     Parameters
     ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    channels : tuple
-        Feature channels per level.
-    strides : tuple
-        Stride per level (length = len(channels) - 1).
-    kernel_size : int
-        Convolution kernel size. Defaults to 3.
-    up_kernel_size : int
-        Transposed convolution kernel size. Defaults to 3.
-    num_res_units : int
-        Number of residual sub-units per block. 0 = plain convolutions.
-    act : str or tuple
-        Activation. Defaults to PReLU.
-    norm : str or tuple
-        Normalization. Defaults to InstanceNorm.
-    bias : bool
-        Whether conv layers have bias. Defaults to True.
+    in_channels, out_channels, channels, strides, kernel_size, up_kernel_size,
+    num_res_units, act, norm, bias: see MONAI UNet documentation.
     """
 
     def __init__(
@@ -141,56 +124,57 @@ class UNet(nn.Module):
     ):
         super().__init__()
         self.n_levels = len(channels)
+        n = self.n_levels
 
-        # Encoder
+        # Encoder: down_blocks[i] takes stride[i] to downsample
         self.down_blocks = []
         ch_in = in_channels
-        for i in range(self.n_levels - 1):
+        for i in range(n - 1):
             if num_res_units > 0:
-                block = _ResidualUnit(ch_in, channels[i], kernel_size,
-                                       stride=strides[i], subunits=num_res_units,
-                                       act=act, norm=norm, bias=bias)
+                self.down_blocks.append(
+                    _ResidualUnit(ch_in, channels[i], kernel_size, stride=strides[i],
+                                   subunits=num_res_units, act=act, norm=norm, bias=bias))
             else:
-                block = _ConvADN(ch_in, channels[i], kernel_size,
-                                  stride=strides[i], bias=bias, norm=norm, act=act)
-            self.down_blocks.append(block)
+                self.down_blocks.append(
+                    _ConvADN(ch_in, channels[i], kernel_size, stride=strides[i],
+                              bias=bias, norm=norm, act=act))
             ch_in = channels[i]
 
-        # Bottom
+        # Bottom: no stride
         if num_res_units > 0:
-            self.bottom = _ResidualUnit(channels[-2], channels[-1], kernel_size,
-                                         stride=1, subunits=num_res_units,
-                                         act=act, norm=norm, bias=bias)
+            self.bottom = _ResidualUnit(channels[-2], channels[-1], kernel_size, stride=1,
+                                         subunits=num_res_units, act=act, norm=norm, bias=bias)
         else:
-            self.bottom = _ConvADN(channels[-2], channels[-1], kernel_size,
-                                    stride=1, bias=bias, norm=norm, act=act)
+            self.bottom = _ConvADN(channels[-2], channels[-1], kernel_size, stride=1,
+                                    bias=bias, norm=norm, act=act)
 
-        # Decoder
+        # Decoder: up_paths[i] processes concatenated (skip + deeper) features
+        # Concatenation happens BEFORE the transposed conv in MONAI UNet
         self.up_paths = []
-        for i in range(self.n_levels - 2, -1, -1):
+        for i in range(n - 2, -1, -1):
             is_top = (i == 0)
-            up_out = out_channels if is_top else channels[i]
+            # Output channels: match the level above (i-1) so SkipConnection can cat
+            up_out = out_channels if is_top else channels[i - 1]
 
-            if i == self.n_levels - 2:
-                up_in_ch = channels[-1] + channels[i]  # bottom + skip
+            # Input channels after concatenation
+            if i == n - 2:
+                upc = channels[i] + channels[-1]  # skip + bottom output
             else:
-                up_in_ch = channels[i + 1] + channels[i]  # prev decoder + skip
+                upc = channels[i] + channels[i]  # skip + decoded from below (both channels[i])
 
-            # Transposed conv to upsample (takes just the decoded features, not concatenated)
-            transp_in = channels[-1] if i == self.n_levels - 2 else channels[i + 1]
-
-            conv_only = is_top and num_res_units == 0
-            transp = _ConvADN(transp_in, transp_in, up_kernel_size,
-                               stride=strides[i], bias=bias, norm=norm, act=act,
-                               conv_only=conv_only, is_transposed=True)
+            # Transposed conv: upc → up_out, stride to upsample
+            transp = _ConvADN(upc, up_out, up_kernel_size, stride=strides[i],
+                               bias=bias, norm=norm, act=act,
+                               conv_only=(is_top and num_res_units == 0),
+                               is_transposed=True)
 
             if num_res_units > 0:
-                ru = _ResidualUnit(transp_in, up_out, kernel_size, stride=1,
+                ru = _ResidualUnit(up_out, up_out, kernel_size, stride=1,
                                     subunits=1, act=act, norm=norm, bias=bias,
                                     last_conv_only=is_top)
-                self.up_paths.append({"transp": transp, "ru": ru})
+                self.up_paths.append([transp, ru])
             else:
-                self.up_paths.append({"transp": transp, "ru": None})
+                self.up_paths.append([transp])
 
     def __call__(self, x):
         # Encode
@@ -202,12 +186,11 @@ class UNet(nn.Module):
         # Bottom
         x = self.bottom(x)
 
-        # Decode
-        for i, up_path in enumerate(self.up_paths):
+        # Decode: cat(skip, x) → up_path
+        for i, up_layers in enumerate(self.up_paths):
             skip = skips[-(i + 1)]
-            x = up_path["transp"](x)
-            x = mx.concatenate([x, skip], axis=-1)
-            if up_path["ru"] is not None:
-                x = up_path["ru"](x)
+            x = mx.concatenate([skip, x], axis=-1)  # cat along channels
+            for layer in up_layers:
+                x = layer(x)
 
         return x

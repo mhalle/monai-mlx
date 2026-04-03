@@ -37,7 +37,11 @@ def convert_pytorch_weights(pt_state_dict: dict) -> dict[str, mx.array]:
                            # UNETR PrUpBlock: blocks.{i}.0.conv.weight is ConvTranspose
                            or (("blocks" in key and ".0.conv.weight" in key
                                 and "conv_block" not in key and "conv1" not in key
-                                and "conv2" not in key)))
+                                and "conv2" not in key))
+                           # MONAI UNet: up path transposed convs
+                           # model.2.0.conv.weight or model.1.submodule.2.0.conv.weight
+                           or ("model." in key and ".2.0.conv.weight" in key)
+                           or ("model." in key and ".2.0.conv.bias" in key))
             if is_transpose:
                 # PyTorch ConvTranspose3d: (in_ch, out_ch, D, H, W)
                 # MLX ConvTranspose3d:     (out_ch, D, H, W, in_ch)
@@ -199,9 +203,7 @@ def remap_unet_keys(mlx_weights: dict[str, mx.array], n_levels: int) -> dict[str
 
         new_key = key
 
-        # Remap ADN components: adn.N -> norm, adn.A -> act
-        new_key = new_key.replace(".adn.N.", ".norm.")
-        new_key = new_key.replace(".adn.A.", ".act.")
+        # UNet uses _ADN which keeps adn.N and adn.A names — no remapping needed
 
         # Parse the recursive structure
         # First determine which level and whether it's encode/decode/bottom
@@ -229,9 +231,9 @@ def _parse_unet_recursive_key(key: str, n_levels: int) -> tuple:
     if rest.startswith("0."):
         return 0, f"down_blocks.0.{rest[2:]}"
 
-    # Top level decoder: model.2.{rest} -> up_convs.0/up_blocks.0
+    # Top level decoder: model.2.{rest} -> up_paths[n_levels-2] (last to decode)
     if rest.startswith("2."):
-        return 0, _remap_up_path(rest[2:], 0)
+        return 0, _remap_up_path(rest[2:], n_levels - 2)
 
     # Recursive levels: model.1.submodule.{...}
     if rest.startswith("1.submodule."):
@@ -245,8 +247,8 @@ def _parse_unet_recursive_key(key: str, n_levels: int) -> tuple:
 
             # Decoder at this depth: starts with "2."
             if r.startswith("2."):
-                up_idx = n_levels - 2 - depth
-                return depth, _remap_up_path(r[2:], up_idx + 1)
+                up_idx = n_levels - 2 - depth  # inner levels decode first
+                return depth, _remap_up_path(r[2:], up_idx)
 
             # Bottom layer (no more submodules): the innermost content
             if r.startswith("1.submodule."):
@@ -266,28 +268,18 @@ def _parse_unet_recursive_key(key: str, n_levels: int) -> tuple:
 def _remap_up_path(rest: str, up_idx: int) -> str:
     """Remap decoder path components.
 
-    PyTorch up path: conv (transposed) + optional ResidualUnit
-    Our structure: up_convs.{i}.transp + up_blocks.{i}
+    PyTorch up path: Sequential(ConvADN, ResidualUnit) or single ConvADN
+    Our structure: up_paths.{i}.0 (ConvADN) + up_paths.{i}.1 (ResidualUnit)
     """
-    # The up path in PyTorch is either:
-    # - A single Convolution (transposed): rest starts with "conv." or "adn."
-    # - A Sequential(Convolution, ResidualUnit): rest starts with "0." or "1."
     if rest.startswith("0."):
-        # Sequential[0] = transposed conv
-        sub = rest[2:]
-        if sub.startswith("conv."):
-            return f"up_convs.{up_idx}.transp.{sub[5:]}"
-        elif sub.startswith("norm.") or sub.startswith("act."):
-            return f"up_convs.{up_idx}.{sub}"
-        return f"up_convs.{up_idx}.transp.{sub}"
+        # Sequential[0] = transposed ConvADN
+        return f"up_paths.{up_idx}.0.{rest[2:]}"
     elif rest.startswith("1."):
         # Sequential[1] = ResidualUnit
-        return f"up_blocks.{up_idx}.{rest[2:]}"
+        return f"up_paths.{up_idx}.1.{rest[2:]}"
     else:
-        # Single module (no Sequential wrapping, conv_only)
-        if rest.startswith("conv."):
-            return f"up_convs.{up_idx}.transp.{rest[5:]}"
-        return f"up_convs.{up_idx}.transp.{rest}"
+        # Single module (no Sequential wrapping)
+        return f"up_paths.{up_idx}.0.{rest}"
 
 
 def remap_swin_unetr_keys(mlx_weights: dict[str, mx.array]) -> dict[str, mx.array]:
