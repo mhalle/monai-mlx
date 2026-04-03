@@ -17,6 +17,13 @@ from .layers import get_activation, get_norm
 # SegResNet blocks
 # ---------------------------------------------------------------------------
 
+def _same_padding(kernel_size):
+    """Compute 'same' padding for scalar or tuple kernel_size."""
+    if isinstance(kernel_size, (list, tuple)):
+        return tuple((k - 1) // 2 for k in kernel_size)
+    return (kernel_size - 1) // 2
+
+
 class ConvOnly(nn.Module):
     """Plain Conv3d without norm or activation (MONAI's conv_only mode)."""
 
@@ -24,18 +31,17 @@ class ConvOnly(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: int = 3,
-        stride: int = 1,
+        kernel_size: int | tuple = 3,
+        stride: int | tuple = 1,
         bias: bool = False,
     ):
         super().__init__()
-        padding = (kernel_size - 1) // 2
         self.conv = nn.Conv3d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
             stride=stride,
-            padding=padding,
+            padding=_same_padding(kernel_size),
             bias=bias,
         )
 

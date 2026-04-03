@@ -91,41 +91,44 @@ class DynUNet(nn.Module):
         Block = UnetResBlock if res_block else UnetBasicBlock
 
         # Input block uses strides[0] (often [1,1,1] but not always)
-        ks0 = _to_tuple(kernel_size[0])
-        st0 = _to_tuple(strides[0])
         self.input_block = Block(
-            in_channels, filters[0], kernel_size=ks0[0],
-            stride=st0[0], norm_name=norm_name,
+            in_channels, filters[0],
+            kernel_size=_to_tuple(kernel_size[0]),
+            stride=_to_tuple(strides[0]),
+            norm_name=norm_name,
         )
 
         # Encoder
         self.downsamples = []
         for i in range(1, n_levels - 1):
-            ks = _to_tuple(kernel_size[i])
-            st = _to_tuple(strides[i])
             self.downsamples.append(
-                Block(filters[i - 1], filters[i], kernel_size=ks[0],
-                      stride=st[0], norm_name=norm_name)
+                Block(filters[i - 1], filters[i],
+                      kernel_size=_to_tuple(kernel_size[i]),
+                      stride=_to_tuple(strides[i]),
+                      norm_name=norm_name)
             )
 
         # Bottleneck
-        ks_bot = _to_tuple(kernel_size[-1])
-        st_bot = _to_tuple(strides[-1])
         self.bottleneck = Block(
-            filters[-2], filters[-1], kernel_size=ks_bot[0],
-            stride=st_bot[0], norm_name=norm_name,
+            filters[-2], filters[-1],
+            kernel_size=_to_tuple(kernel_size[-1]),
+            stride=_to_tuple(strides[-1]),
+            norm_name=norm_name,
         )
 
-        # Decoder
+        # Decoder: MONAI uses kernel_size[1:][::-1] and upsample_kernel_size[::-1]
+        up_kernels = list(kernel_size[1:])[::-1]
+        up_uks = list(upsample_kernel_size)[::-1]
+        up_filters_in = list(filters[1:])[::-1]
+        up_filters_out = list(filters[:-1])[::-1]
+
         self.upsamples = []
-        for i in range(n_levels - 2, -1, -1):
-            ks = _to_tuple(kernel_size[i])
-            uks = upsample_kernel_size[i] if i < len(upsample_kernel_size) else strides[i + 1]
-            in_ch = filters[i + 1] if i < n_levels - 2 else filters[-1]
+        for i in range(len(up_kernels)):
             self.upsamples.append(
-                DynUNetUpBlock(in_ch, filters[i], kernel_size=ks[0],
-                               upsample_kernel_size=uks, norm_name=norm_name,
-                               res_block=res_block)
+                DynUNetUpBlock(up_filters_in[i], up_filters_out[i],
+                               kernel_size=_to_tuple(up_kernels[i]),
+                               upsample_kernel_size=up_uks[i],
+                               norm_name=norm_name, res_block=res_block)
             )
 
         # Output

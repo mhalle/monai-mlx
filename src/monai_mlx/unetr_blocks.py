@@ -14,19 +14,27 @@ from .blocks import ConvOnly
 from .layers import get_activation, get_norm
 
 
+def _stride_is_unity(stride):
+    """Check if stride is effectively 1 (scalar or all-ones tuple)."""
+    if isinstance(stride, (list, tuple)):
+        return all(s == 1 for s in stride)
+    return stride == 1
+
+
 class UnetResBlock(nn.Module):
     """Post-activation residual block: conv→norm→act→conv→norm + skip→act.
 
     Unlike SegResNet's pre-activation pattern, this uses post-activation
     (matching MONAI's dynunet_block.UnetResBlock).
+    Supports tuple kernel_size and stride for anisotropic configurations.
     """
 
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: int = 3,
-        stride: int = 1,
+        kernel_size: int | tuple = 3,
+        stride: int | tuple = 1,
         norm_name: str | tuple = "instance",
     ):
         super().__init__()
@@ -38,7 +46,7 @@ class UnetResBlock(nn.Module):
 
         # Residual projection if channels or stride change
         self.downsample = None
-        if in_channels != out_channels or stride != 1:
+        if in_channels != out_channels or not _stride_is_unity(stride):
             self.downsample = ConvOnly(in_channels, out_channels, kernel_size=1, stride=stride)
             self.norm3 = get_norm(norm_name, out_channels)
 
@@ -52,14 +60,17 @@ class UnetResBlock(nn.Module):
 
 
 class UnetBasicBlock(nn.Module):
-    """Basic block without residual: conv→norm→act→conv→norm→act."""
+    """Basic block without residual: conv→norm→act→conv→norm→act.
+
+    Supports tuple kernel_size and stride for anisotropic configurations.
+    """
 
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: int = 3,
-        stride: int = 1,
+        kernel_size: int | tuple = 3,
+        stride: int | tuple = 1,
         norm_name: str | tuple = "instance",
     ):
         super().__init__()
