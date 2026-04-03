@@ -1,0 +1,32 @@
+[project]
+name = "monai-mlx"
+version = "0.1.0"
+description = "MLX inference backend for MONAI on Apple Silicon"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "mlx>=0.22",
+    "numpy",
+    "nibabel",
+    "scipy",
+    "safetensors",
+]
+
+[project.optional-dependencies]
+convert = ["torch", "monai"]
+test = ["pytest", "torch", "monai"]
+
+[project.scripts]
+monai-mlx-convert = "monai_mlx.bundle:convert_cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/monai_mlx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: heavy benchmarks or pretrained model tests"]
