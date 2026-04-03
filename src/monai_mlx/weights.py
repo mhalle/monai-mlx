@@ -173,6 +173,123 @@ def remap_unetr_keys(mlx_weights: dict[str, mx.array]) -> dict[str, mx.array]:
     return remapped
 
 
+def remap_unet_keys(mlx_weights: dict[str, mx.array], n_levels: int) -> dict[str, mx.array]:
+    """Remap PyTorch MONAI UNet keys from recursive SkipConnection to flat layout.
+
+    PyTorch recursive structure:
+        model.0 = down_block[0] (top level encoder)
+        model.1.submodule.0 = down_block[1]
+        model.1.submodule.1.submodule.0 = down_block[2]
+        ...
+        model.1.submodule...submodule = bottom (innermost)
+        model.1.submodule...2 = up path (decoded from inside out)
+        model.2 = up path (top level decoder)
+
+    Our flat structure:
+        down_blocks.{i} = encoder blocks
+        bottom = bottleneck
+        up_convs.{i} / up_blocks.{i} = decoder blocks
+    """
+    remapped = {}
+
+    for key, val in mlx_weights.items():
+        # Skip BatchNorm running stats
+        if "running_mean" in key or "running_var" in key or "num_batches_tracked" in key:
+            continue
+
+        new_key = key
+
+        # Remap ADN components: adn.N -> norm, adn.A -> act
+        new_key = new_key.replace(".adn.N.", ".norm.")
+        new_key = new_key.replace(".adn.A.", ".act.")
+
+        # Parse the recursive structure
+        # First determine which level and whether it's encode/decode/bottom
+        level, component = _parse_unet_recursive_key(new_key, n_levels)
+
+        if level is not None and component is not None:
+            new_key = component
+
+        remapped[new_key] = val
+
+    return remapped
+
+
+def _parse_unet_recursive_key(key: str, n_levels: int) -> tuple:
+    """Parse a recursive MONAI UNet key into (level, flat_key).
+
+    Returns (None, None) if the key doesn't match the expected pattern.
+    """
+    if not key.startswith("model."):
+        return None, None
+
+    rest = key[6:]  # strip "model."
+
+    # Top level encoder: model.0.{rest} -> down_blocks.0.{rest}
+    if rest.startswith("0."):
+        return 0, f"down_blocks.0.{rest[2:]}"
+
+    # Top level decoder: model.2.{rest} -> up_convs.0/up_blocks.0
+    if rest.startswith("2."):
+        return 0, _remap_up_path(rest[2:], 0)
+
+    # Recursive levels: model.1.submodule.{...}
+    if rest.startswith("1.submodule."):
+        depth = 1
+        r = rest[12:]  # strip "1.submodule."
+
+        while True:
+            # Encoder at this depth: starts with "0."
+            if r.startswith("0."):
+                return depth, f"down_blocks.{depth}.{r[2:]}"
+
+            # Decoder at this depth: starts with "2."
+            if r.startswith("2."):
+                up_idx = n_levels - 2 - depth
+                return depth, _remap_up_path(r[2:], up_idx + 1)
+
+            # Bottom layer (no more submodules): the innermost content
+            if r.startswith("1.submodule."):
+                depth += 1
+                r = r[12:]
+                continue
+
+            # This IS the bottom layer content
+            if "submodule" not in r.split(".")[0]:
+                return depth, f"bottom.{r}"
+
+            break
+
+    return None, None
+
+
+def _remap_up_path(rest: str, up_idx: int) -> str:
+    """Remap decoder path components.
+
+    PyTorch up path: conv (transposed) + optional ResidualUnit
+    Our structure: up_convs.{i}.transp + up_blocks.{i}
+    """
+    # The up path in PyTorch is either:
+    # - A single Convolution (transposed): rest starts with "conv." or "adn."
+    # - A Sequential(Convolution, ResidualUnit): rest starts with "0." or "1."
+    if rest.startswith("0."):
+        # Sequential[0] = transposed conv
+        sub = rest[2:]
+        if sub.startswith("conv."):
+            return f"up_convs.{up_idx}.transp.{sub[5:]}"
+        elif sub.startswith("norm.") or sub.startswith("act."):
+            return f"up_convs.{up_idx}.{sub}"
+        return f"up_convs.{up_idx}.transp.{sub}"
+    elif rest.startswith("1."):
+        # Sequential[1] = ResidualUnit
+        return f"up_blocks.{up_idx}.{rest[2:]}"
+    else:
+        # Single module (no Sequential wrapping, conv_only)
+        if rest.startswith("conv."):
+            return f"up_convs.{up_idx}.transp.{rest[5:]}"
+        return f"up_convs.{up_idx}.transp.{rest}"
+
+
 def remap_swin_unetr_keys(mlx_weights: dict[str, mx.array]) -> dict[str, mx.array]:
     """Remap PyTorch SwinUNETR keys to MLX module hierarchy."""
     # First apply UNETR decoder/encoder remapping

@@ -41,10 +41,15 @@ def _ensure_registry():
         return
     from .segresnet import SegResNet
     from .basic_unet import BasicUNet
+    from .unet import UNet
     from .unetr import UNETR
     from .swin_unetr import SwinUNETR
 
     MODEL_REGISTRY.update({
+        "UNet": UNet,
+        "Unet": UNet,
+        "monai.networks.nets.UNet": UNet,
+        "monai.networks.nets.unet.UNet": UNet,
         "SegResNet": SegResNet,
         "monai.networks.nets.SegResNet": SegResNet,
         "monai.networks.nets.segresnet.SegResNet": SegResNet,
