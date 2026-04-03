@@ -15,16 +15,7 @@ def test_unetr_forward_shape():
     model = UNETR(
         in_channels=1, out_channels=4,
         img_size=(32, 32, 32),
-        feature_size=8, hidden_size=32, mlp_dim=64,
-        num_heads=4, num_layers=4,
-    )
-    # Override num_layers for small test
-    model.num_layers = 4
-    # Rebuild with small config
-    model = UNETR(
-        in_channels=1, out_channels=4,
-        img_size=(32, 32, 32),
-        feature_size=8, hidden_size=32, mlp_dim=64, num_heads=4,
+        feature_size=8, hidden_size=48, mlp_dim=96, num_heads=4,
     )
 
     x = mx.random.normal((1, 32, 32, 32, 1))

@@ -2,6 +2,7 @@
 
 from .basic_unet import BasicUNet
 from .segresnet import SegResNet
+from .swin_unetr import SwinUNETR
 from .unetr import UNETR
 from .weights import convert_pytorch_weights, load_weights_safetensors, save_weights_safetensors
 

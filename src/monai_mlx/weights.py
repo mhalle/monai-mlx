@@ -173,6 +173,27 @@ def remap_unetr_keys(mlx_weights: dict[str, mx.array]) -> dict[str, mx.array]:
     return remapped
 
 
+def remap_swin_unetr_keys(mlx_weights: dict[str, mx.array]) -> dict[str, mx.array]:
+    """Remap PyTorch SwinUNETR keys to MLX module hierarchy."""
+    # First apply UNETR decoder/encoder remapping
+    remapped = remap_unetr_keys(mlx_weights)
+
+    final = {}
+    for key, val in remapped.items():
+        new_key = key
+
+        # Skip relative_position_index (buffer, not parameter)
+        if "relative_position_index" in key:
+            continue
+
+        # SwinTransformerBlock: mlp.linear1 -> mlp_linear1
+        new_key = new_key.replace(".mlp.linear1.", ".mlp_linear1.")
+        new_key = new_key.replace(".mlp.linear2.", ".mlp_linear2.")
+
+        final[new_key] = val
+    return final
+
+
 def load_weights_safetensors(path: str | Path) -> dict[str, mx.array]:
     """Load MLX weights from safetensors format."""
     from safetensors.numpy import load_file
