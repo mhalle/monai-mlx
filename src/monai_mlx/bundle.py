@@ -73,7 +73,9 @@ def _strip_monai_kwargs(kwargs: dict) -> dict:
             "attn_drop_rate", "dropout_path_rate", "use_checkpoint",
             "downsample", "use_v2", "proj_type", "pos_embed_type",
             "classification", "post_activation", "save_attn",
-            "normalize", "norm_layer", "patch_norm"}
+            "normalize", "norm_layer", "patch_norm",
+            "img_size"  # UNETR-specific, handled separately
+            }
     cleaned = {}
     for k, v in kwargs.items():
         if k.startswith("_") or k in skip:
@@ -140,12 +142,12 @@ def build_model_from_config(parsed_config: dict):
     if target is None:
         raise ValueError("No _target_ found in config")
 
-    # Look up in registry
-    model_cls = None
-    for name, cls in MODEL_REGISTRY.items():
-        if target.endswith(name) or name == target:
-            model_cls = cls
-            break
+    # Look up in registry — try exact match first, then endswith
+    model_cls = MODEL_REGISTRY.get(target)
+    if model_cls is None:
+        # Try short name (last component)
+        short = target.rsplit(".", 1)[-1]
+        model_cls = MODEL_REGISTRY.get(short)
 
     if model_cls is None:
         raise ValueError(
@@ -218,8 +220,17 @@ def download_bundle(
 
     # Get download URL from MONAI
     try:
+        from monai.bundle import scripts
         from monai.bundle.scripts import get_bundle_info
-        info = get_bundle_info(name, version=version or "")
+        if version is None:
+            bundles = scripts.get_all_bundles_list()
+            for bname, bver in bundles:
+                if bname == name:
+                    version = bver
+                    break
+            if version is None:
+                raise ValueError(f"Bundle '{name}' not found in model zoo")
+        info = get_bundle_info(name, version=version)
         url = info["browser_download_url"]
     except ImportError:
         # Fallback: construct URL directly
@@ -228,33 +239,20 @@ def download_bundle(
         url = (f"https://github.com/Project-MONAI/model-zoo/releases/download/"
                f"hosting_storage_v1/{name}_v{version}.zip")
 
-    print(f"Downloading {name}...")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        resp = requests.get(url, stream=True)
-        resp.raise_for_status()
-        total = int(resp.headers.get("content-length", 0))
-        downloaded = 0
-        for chunk in resp.iter_content(chunk_size=8192):
-            tmp.write(chunk)
-            downloaded += len(chunk)
-            if total:
-                pct = 100 * downloaded / total
-                print(f"\r  {downloaded / 1e6:.1f}/{total / 1e6:.1f} MB ({pct:.0f}%)",
-                      end="", flush=True)
-        print()
-        tmp_path = tmp.name
+    # Use MONAI's download which handles HuggingFace, NGC, etc.
+    try:
+        from monai.bundle.scripts import download
+        print(f"Downloading {name} v{version}...")
+        download(name=name, version=version, bundle_dir=str(output_dir))
+    except ImportError:
+        raise ImportError(
+            "monai is required for downloading bundles: "
+            "uv add monai --dev"
+        )
 
-    # Extract
-    print("Extracting...")
-    with zipfile.ZipFile(tmp_path) as zf:
-        zf.extractall(output_dir)
-    os.unlink(tmp_path)
-
-    # The zip might extract to a subdirectory
     if not bundle_dir.exists():
-        # Check if extracted with version suffix
         candidates = list(output_dir.glob(f"{name}*"))
         if candidates:
             candidates[0].rename(bundle_dir)
