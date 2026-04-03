@@ -72,6 +72,21 @@ output = compiled(x)  # (1, 96, 96, 96, 14)
 | UNETR | ViT encoder + CNN decoder | varies | max diff 0.000004 |
 | SwinUNETR | Swin Transformer + shifted window attention | 62M | max diff 0.000080 |
 
+## Memory optimization (fp16)
+
+For memory-constrained machines, convolution-only models (SegResNet, BasicUNet) can run in fp16:
+
+```python
+from monai_mlx import load_bundle, to_fp16
+
+model = load_bundle("~/.monai_mlx/my_segresnet_bundle")
+model = to_fp16(model)          # halves weight memory
+compiled = mx.compile(model)
+output = compiled(x.astype(mx.float16))
+```
+
+For transformer models (UNETR, SwinUNETR), use `to_fp16(model, safe=True)` which only casts convolution weights and keeps attention/normalization in fp32 to avoid overflow.
+
 ## How it works
 
 Pure MLX reimplementation of MONAI's inference path:

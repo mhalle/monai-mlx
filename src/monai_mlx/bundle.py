@@ -293,6 +293,45 @@ def convert_bundle(
     return sf_path
 
 
+def to_fp16(model, safe: bool = True):
+    """Cast model weights to float16 to reduce memory usage.
+
+    Parameters
+    ----------
+    model : nn.Module
+        MLX model.
+    safe : bool
+        If True (default), only cast convolution weights (5D tensors)
+        and leave normalization/linear weights in float32. This avoids
+        overflow in attention and normalization layers.
+        If False, cast everything to fp16.
+
+    Returns
+    -------
+    The model with fp16 weights. Input data should also be cast to fp16.
+
+    Note
+    ----
+    fp16 works reliably for convolution-only models (SegResNet, BasicUNet).
+    For transformer models (UNETR, SwinUNETR), use safe=True or stay in fp32.
+    """
+    import mlx.nn as nn
+
+    weights = list(nn.utils.tree_flatten(model.parameters()))
+    if safe:
+        fp16_weights = [
+            (k, v.astype(mx.float16) if v.ndim >= 3 else v)
+            for k, v in weights
+        ]
+    else:
+        fp16_weights = [
+            (k, v.astype(mx.float16) if v.dtype == mx.float32 else v)
+            for k, v in weights
+        ]
+    model.load_weights(fp16_weights)
+    return model
+
+
 def convert_cli():
     """CLI entry point for bundle download and conversion."""
     import argparse
