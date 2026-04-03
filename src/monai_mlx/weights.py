@@ -32,8 +32,9 @@ def convert_pytorch_weights(pt_state_dict: dict) -> dict[str, mx.array]:
             # Detect ConvTranspose3d: key contains deconv/transp/upsample,
             # OR shape indicates transposed conv (in_ch > out_ch typically,
             # but more reliably: check if kernel matches stride pattern in UNETR)
-            is_transpose = ("deconv" in key or "transp" in key.lower()
-                           or "upsample" in key.lower()
+            is_transpose = ("deconv" in key
+                           or "transp_conv" in key.lower()
+                           or (".upsample." in key.lower() and "conv_block" not in key)
                            # UNETR PrUpBlock: blocks.{i}.0.conv.weight is ConvTranspose
                            or (("blocks" in key and ".0.conv.weight" in key
                                 and "conv_block" not in key and "conv1" not in key
@@ -280,6 +281,33 @@ def _remap_up_path(rest: str, up_idx: int) -> str:
     else:
         # Single module (no Sequential wrapping)
         return f"up_paths.{up_idx}.0.{rest}"
+
+
+def remap_dynunet_keys(mlx_weights: dict[str, mx.array]) -> dict[str, mx.array]:
+    """Remap PyTorch DynUNet keys to MLX module hierarchy.
+
+    DynUNet has both recursive (skip_layers) and flat (downsamples/upsamples)
+    keys in its state dict. We use only the flat keys and skip the recursive ones.
+    """
+    remapped = {}
+    for key, val in mlx_weights.items():
+        # Skip recursive skip_layers keys (duplicates of flat keys)
+        if key.startswith("skip_layers."):
+            continue
+
+        new_key = key
+
+        # transp_conv.conv -> transp_conv (unwrap Convolution wrapper)
+        new_key = new_key.replace(".transp_conv.conv.", ".transp_conv.")
+
+        # output_block.conv.conv -> output_block.conv
+        if new_key.startswith("output_block.conv.conv."):
+            new_key = new_key.replace("output_block.conv.conv.", "output_block.conv.")
+
+        # conv1.conv / conv2.conv stay the same (our UnetBasicBlock uses ConvOnly which has .conv)
+
+        remapped[new_key] = val
+    return remapped
 
 
 def remap_swin_unetr_keys(mlx_weights: dict[str, mx.array]) -> dict[str, mx.array]:
