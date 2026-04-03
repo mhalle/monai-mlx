@@ -34,4 +34,5 @@ markers = ["slow: heavy benchmarks or pretrained model tests"]
 [dependency-groups]
 dev = [
     "einops>=0.8.2",
+    "requests>=2.33.1",
 ]

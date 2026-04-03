@@ -1,6 +1,7 @@
 """monai-mlx — MLX inference backend for MONAI on Apple Silicon."""
 
 from .basic_unet import BasicUNet
+from .bundle import load_bundle, download_bundle, convert_bundle
 from .segresnet import SegResNet
 from .swin_unetr import SwinUNETR
 from .unetr import UNETR
